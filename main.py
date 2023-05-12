@@ -1,4 +1,3 @@
-import pandas as pd
 import netCDF4 as nc
 import os
 from utils.config_loader import Configs
@@ -20,8 +19,6 @@ dt = nc.Dataset(file_path)
 vars = dt.variables.keys()
 
 # lat, lon, chl1_mean, chl1_flags, chl1_error
-
-
 
 # for root, dirs, files in os.walk(chl_dir, topdown=True, onerror=None, followlinks=False):
 #     print('root:', root)

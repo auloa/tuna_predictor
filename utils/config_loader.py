@@ -46,3 +46,4 @@ if __name__ == "__main__":
     config = ConfigLoader()
     img_data_dir = config.get("IMG_DATA_DIR")
     print(img_data_dir)
+

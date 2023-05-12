@@ -619,5 +619,3 @@ if __name__ == '__main__':
         dr.read_bathymetry()
         # map the closest sla lat, lon to the lat and lon in df
         dr.read_catch_data()
-
-        # find the closest lat, lon in lat_lon_pairs_bath to dr.df_catch_data

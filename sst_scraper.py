@@ -166,3 +166,4 @@ if __name__ == '__main__':
     # scrp.get_year_urls()
     # scrp.get_daily_url()
     # scrp.download_file()
+
