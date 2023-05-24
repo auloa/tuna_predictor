@@ -53,7 +53,7 @@ from tqdm import tqdm
 from sklearn.neighbors import NearestNeighbors, KDTree
 from utils.config_loader import Configs
 from utils.distance_metric import haversine_metric
-
+import regex as re
 
 class DataReader:
     def __init__(self, year_range=[2017], ref_dataset='chl', use_haversine=True, testing=False,
@@ -161,19 +161,65 @@ class DataReader:
                       'temperature', 'subTemp', 'thermocline', 'current', 'comments']
 
         # split the data column into data and time columns
-        # for example date: 2017-01-25T16:43:00 -> date: 25-01-17, time: 16:43:00
+        # for example date: 2017-01-25T16:43:00 -> date: 2017-01-25, time: 16:43:00
         df['date'] = df['date'].apply(lambda x: x.split('T'))
         df['time'] = df['date'].apply(lambda x: x[1])
         df['date'] = df['date'].apply(lambda x: x[0])
 
         # convert date format from year-month-day to day-month-year
-        df['date'] = df['date'].apply(lambda x: datetime.strptime(x, '%Y-%m-%d').strftime('%d-%m-%y'))
-
         df = df.sort_values(by=['lat', 'lon'])
-
+        df = self.extract_effort_data(df)
         return df
 
-    def read_bathymetry(self):
+    def extract_effort_data(self, df, reset=False):
+        # go through the df comments columns and extract the effort data
+        # each datapoint may contain numbers in the string, extract the numbers and convert to int
+
+        # if the effort data is already extracted, return
+        if 'effort' in df.columns and not reset:
+            return df
+
+        # extract different fishing techniques
+        # go through comments column and extract the unique methods
+        comments = df['comments'].unique()
+        key_words = [str(x) for x in comments]
+        # join the comments
+        key_words = ' '.join(key_words).replace(':', ' ').replace(',', ' ').replace('/', ' ')
+        # split the comments
+        key_words = set(key_words.split(' '))
+        # remove any string that is a number of is nan
+        key_words = [x for x in key_words if not x.isdigit() and x != 'nan' and x != '']
+
+        #go through the key words and show sample comments
+        for key_word in key_words:
+            print(key_word)
+            print(df[~df.comments.isnan()][df['comments'].str.contains(key_word)]['comments'].sample(5).values)
+
+
+
+        df['effort'] = df['comments'].apply(self.process_comments)
+
+
+    def process_comments(self, comment):
+        # extract the effort data from the comments column
+        effort = []
+        # split the comment by ','
+        comment = comment.split(',')
+        # loop through the comment
+        for c in comment:
+            # extract the numbers from the comment
+            c = re.findall(r'\d+', c)
+            # loop through the numbers
+            for n in c:
+                # convert the number to int and append to the effort list
+                effort.append(int(n))
+        return effort
+
+    def read_bathymetry(self, reset=False):
+        path_bathymetry = os.path.join(self.data_dir, 'bathymetry.ftr')
+        if os.path.exists(path_bathymetry) and not reset:
+            return
+
         print('Loading bathymetry data...')
         file_name = 'ETOPO1_Bed_g_gmt4.grd'
         file_path = os.path.join(self.bathymetry_dir, file_name)
@@ -220,10 +266,7 @@ class DataReader:
         self.df_bath.reset_index(inplace=True)
         self.df_bath.drop(columns=['index'], inplace=True)
 
-        # assign lat_ref and lon_ref to the bathymetry data frame by finding the closest lat and lon
-        self.df_bath = self.mapping_lat_lon(self.df_bath)
-
-        self.df_bath.to_feather(os.path.join(self.data_dir, 'bathymetry.ftr'))
+        self.df_bath.to_feather(path_bathymetry)
 
     def define_ref_lat_lon_pairs(self, reset=False):
         """
@@ -240,8 +283,8 @@ class DataReader:
             df_ref = pd.read_feather(file_name)
         path_lat_lon_pairs_ref = os.path.join(self.data_dir, f'lat_lon_pairs_{self.ref_dataset}.ftr')
         if os.path.exists(path_lat_lon_pairs_ref) and not reset:
-            print('\nReading reference lat and lon pairs from csv file...')
-            self.df_lat_lon_pairs_ref = pd.read_csv(path_lat_lon_pairs_ref)
+            print('\nReading reference lat and lon pairs from feather file...')
+            self.df_lat_lon_pairs_ref = pd.read_feather(path_lat_lon_pairs_ref)
         else:
             # extract unique lat and lon pairs from df_ref
             self.df_lat_lon_pairs_ref = df_ref[['lat', 'lon']].drop_duplicates()
@@ -251,8 +294,8 @@ class DataReader:
             self.df_lat_lon_pairs_ref.reset_index(inplace=True)
             # drop the index column
             self.df_lat_lon_pairs_ref.drop(columns=['index'], inplace=True)
-            # save the reference lat and lon pairs to csv file
-            self.df_lat_lon_pairs_ref.to_csv(path_lat_lon_pairs_ref, index=False)
+            # save the reference lat and lon pairs to ftr file
+            self.df_lat_lon_pairs_ref.to_feather(path_lat_lon_pairs_ref)
 
     def read_chl(self, reset=False):
         """
@@ -298,7 +341,6 @@ class DataReader:
                 print('saving the chl data frame to csv file')
                 self.df_chl.reset_index(inplace=True)
                 self.df_chl.drop(columns=['index'], inplace=True)
-
                 # save the data frame using feather format
                 self.df_chl.to_feather(os.path.join(self.data_dir, f'chl_{year}_{month}.ftr'))
                 self.df_chl = pd.DataFrame()
@@ -333,15 +375,15 @@ class DataReader:
 
         # filter the data frame to only include the data within the lat and lon range
         df = self.trim_df(df)
-
-
         return df
 
-    def read_sst(self):
+    def read_sst(self, reset=False):
         """
         Read SST data from Globocolor
         """
-
+        file_list = glob.glob(os.path.join(self.data_dir, 'sst*.ftr'))
+        if len(file_list) > 0 and not reset:
+            return
         # read data from .nc files and get data frame and merge the data frames
         print('\nReading sst data from .nc files and compiling it into csv format')
         self.df_sst = pd.DataFrame()
@@ -408,10 +450,13 @@ class DataReader:
 
         return df
 
-    def read_sla(self):
+    def read_sla(self, reset=False):
         """
         Read SLA data from AVISO
         """
+        file_list = glob.glob(os.path.join(self.data_dir, 'sla*.ftr'))
+        if len(file_list) > 0 and not reset:
+            return
 
         print('\nReading sla data from .nc files and compiling into csv format')
         # read data from .nc files and get data frame and merge the data frames
@@ -500,6 +545,7 @@ class DataReader:
         df.reset_index(inplace=True)
         df.drop(columns=['index'], inplace=True)
         return df
+
     def assign_lat_lon_ref(self,
                            dataset_name):  # assume that the data is cyclic, so that the reference lat and lon pairs are the same as the data lat and lon pairs
         # check the length of dr.df_chl and df_lat_lon_pairs_chl
@@ -516,7 +562,7 @@ class DataReader:
             # compare df_lat_lon with df_lat_lon_pairs_ref and add any new lat and lon pairs to df_lat_lon_pairs
             df_lat_lon_pairs = pd.concat([df_lat_lon_pairs, df_lat_lon]).drop_duplicates().reset_index(drop=True)
 
-        df_lat_lon_pairs = self.mapping_lat_lon(df_lat_lon_pairs, self.df_lat_lon_pairs_ref)
+        df_lat_lon_pairs = self.mapping_lat_lon(df_lat_lon_pairs)
 
         # save the lat and lon pairs to .ftr file
         df_lat_lon_pairs.to_feather(os.path.join(self.data_dir, f'lat_lon_pairs_{dataset_name}.ftr'))
@@ -565,9 +611,8 @@ class DataReader:
 
         return df_lat_lon_pairs_query
 
-
     def set_ref_lat_lon(self, dataset_name):
-        print('Setting the reference lat and lon to the query data...')
+        print(f'Setting the reference lat and lon to the {dataset_name} data...')
 
         lat_lon_pair_file = os.path.join(self.data_dir, f'lat_lon_pairs_{dataset_name}.ftr')
         if os.path.exists(lat_lon_pair_file):
@@ -581,11 +626,13 @@ class DataReader:
             df = pd.read_feather(data_file)
             # add index column
             df = df.reset_index()
+
             # define function to return index of the df where the lat and lon match the lat and lon from lat_lon_pairs_query
             def lat_lon_match(row):
                 ind_q = df_lat_lon_pairs[
                     (df_lat_lon_pairs['lat'] == row['lat']) & (df_lat_lon_pairs['lon'] == row['lon'])].index.tolist()
                 return ind_q[0]
+
             tqdm.pandas()
             ind_q_list = df.progress_apply(lambda row: pd.Series(lat_lon_match(row)), axis=1).values
 
@@ -601,14 +648,20 @@ class DataReader:
 
             df.to_feather(data_file)
 
-    def set_ref_lat_lon_cyclic(self, dataset_name, df_lat_lon_pairs, data_dir=Configs.get('DATA_DIR')):
+    def set_ref_lat_lon_cyclic(self, dataset_name):
         # assign lat_ref and lon_ref to dr.df_chl
         # assume that the data is cyclic, so that the reference lat and lon pairs are the same as the data lat and lon pairs
         # check the length of dr.df_chl and df_lat_lon_pairs_chl
         # if the length is the same or the length is multiple of the length of df_lat_lon_pairs_chl, then the data is cyclic
         # otherwise, the data is not cyclic
         # get the list of all the data files in data_dir with the dataset_name in the file name
-        data_files = glob.glob(os.path.join(data_dir, dataset_name + '*.ftr'))
+        lat_lon_pair_file = os.path.join(self.data_dir, f'lat_lon_pairs_{dataset_name}.ftr')
+        if os.path.exists(lat_lon_pair_file):
+            df_lat_lon_pairs = pd.read_feather(lat_lon_pair_file)
+        else:
+            raise Exception(f'lat_lon_pairs_{dataset_name}.ftr does not exist in {self.data_dir}')
+
+        data_files = glob.glob(os.path.join(self.data_dir, dataset_name + '*.ftr'))
         # read the data files
         for data_file in tqdm(data_files, desc='Assigning lat_ref and lon_ref to ' + dataset_name + ' data...'):
             df = pd.read_feather(data_file)
@@ -639,6 +692,67 @@ class DataReader:
             # save the data file
             df.to_feather(data_file)
 
+    def prepare_final_data(self):
+        df = pd.read_feather(os.path.join(self.data_dir, f'catch_{self.year_name}.ftr'))
+        # add the bathymetry data to the df
+        df_bath = pd.read_feather(os.path.join(self.data_dir, 'bathymetry.ftr'))
+        # take the z values from the bathymetry data and add it to the df by matching lat_ref and lon_ref columns
+        tqdm.pandas()
+        df['z'] = df.progress_apply(lambda row: df_bath[(df_bath['lat_ref'] == row['lat_ref']) &
+                                                        (df_bath['lon_ref'] == row['lon_ref'])]['z'].values[0], axis=1)
+
+        # define dataset list
+        dataset_list = ['chl', 'sst', 'sla']
+
+        # extract the unique dates in the dataset
+        dates = df['date'].unique()
+        year_month = []
+        year_month_day = []
+        # get the list of unique year month combinations in the dates
+        for date in dates:
+            # get the year and month in string format
+            date = datetime.strptime(date, "%Y-%m-%d")
+            year = str(date.year)
+            month = str(date.month)
+            day = str(date.day).zfill(2)
+            year_month.append(year + '_' + month)
+            year_month_day.append(year + '-' + month.zfill(2) + '-' + day)
+        year_month = list(set(year_month))
+
+        column_dict = {'sla': ['sla', 'sla_mask', 'eke', 'eke_mask', 'date', 'lat_ref', 'lon_ref'],
+                       'chl': ['chl1_mean', 'chl1_mean_mask', 'date', 'lat_ref', 'lon_ref'],
+                       'sst': ['sst', 'sst_mask', 'date', 'lat_ref', 'lon_ref']}
+
+        # go through the year_month combinations and open the data files
+        # add the data from the file to the final data file by matching the data and the lat_ref and lon_ref format
+        for year_month_ in tqdm(year_month, desc='Preparing final data...'):
+            for dataset_name in dataset_list:
+                # get the data file
+                data_file = os.path.join(self.data_dir, f'{dataset_name}_{year_month_}.ftr')
+                if os.path.exists(data_file):
+                    df_data = pd.read_feather(data_file)
+                    # add the data to the final data file by matching lat_ref, lon_ref and date
+                    df = df.merge(df_data[column_dict[dataset_name]],
+                                  on=['lat_ref', 'lon_ref', 'date'],
+                                  how='left',
+                                  suffixes=('', '_y'))
+                    # drop the columns with _y suffix and merge the values with the original column by taking the
+                    # non-null values
+                    for column in column_dict[dataset_name]:
+                        if column + '_y' in df.columns:
+                            df[column] = df.apply(lambda row: row[column] if pd.notnull(row[column]) else row[column + '_y'], axis=1)
+                            df.drop(columns=[column + '_y'], inplace=True)
+                else:
+                    print(f'{data_file} does not exist for {dataset_name} and {year_month_}')
+
+        # split the date column into year, month and day columns
+        df['year'] = df['date'].apply(lambda x: x.split('-')[0])
+        df['month'] = df['date'].apply(lambda x: x.split('-')[1])
+        df['day'] = df['date'].apply(lambda x: x.split('-')[2])
+
+        # save the final data file
+        df.to_feather(os.path.join(self.data_dir, f'catch_{self.year_name}_final.ftr'))
+
 
 def plot_catch_data(df_catch):
     import pandas as pd
@@ -662,25 +776,32 @@ def plot_catch_data(df_catch):
 
 
 if __name__ == '__main__':
-    testing = False
+    # testing = False
     dr = DataReader([2017], ref_dataset='chl', use_haversine=False)
-    # process the catch data on the first run
-    # first choose the reference lat and lon for the whole dataset
-    # for the prototyping purpose, lat and lon ranges used in the chl dataset are used
-    # first read the catch data and get the ranges for the lat and lon
-    # read the catch data
-    dr.read_catch()
-    dr.read_chl()
-    dr.read_sst()
-    dr.read_sla()
-    dr.read_bathymetry()
-    # extract the unique lat and lon pairs from the catch data and save them to a csv file as reference
+    # # process the catch data on the first run
+    # # first choose the reference lat and lon for the whole dataset
+    # # for the prototyping purpose, lat and lon ranges used in the chl dataset are used
+    # # first read the catch data and get the ranges for the lat and lon
+    # # read the catch data
+    dr.read_catch(reset=True)
+    # dr.read_chl()
+    # dr.read_sst()
+    # dr.read_sla()
+    # dr.read_bathymetry()
+    # # extract the unique lat and lon pairs from the catch data and save them to a csv file as reference
     dr.define_ref_lat_lon_pairs(reset=False)
-    datasets = ['catch', 'chl', 'sst', 'sla', 'bath']
+    datasets = ['catch']  # , 'chl', 'sst', 'sla', 'bath']
     for dataset in datasets:
         dr.assign_lat_lon_ref(dataset)
         if dataset == 'catch':
             dr.set_ref_lat_lon(dataset)
         else:
             dr.set_ref_lat_lon_cyclic(dataset)
-    exit()
+    # exit()
+
+    # Once all the data is processed, prepare the final data for training load the catch data, go through each data
+    # point, find the corresponding data in the other datasets using lat_ref and lat_lon
+    # Check the date associated with the datapoint in the catch data, open the corresponding data file, match the
+    # lat_ref and lon_ref, and extract the data
+    # save the data to a new file
+    dr.prepare_final_data()
